@@ -2,14 +2,13 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Agent definition
+// agentInfo describes an ACP-compatible agent binary.
+// It is shared between the ACP layer (acp.go) and the UI layer (tui.go).
 type agentInfo struct {
 	name    string
 	command string
@@ -21,20 +20,7 @@ func (a agentInfo) Title() string       { return a.name }
 func (a agentInfo) Description() string { return a.desc }
 func (a agentInfo) FilterValue() string { return a.name }
 
-// Default built-in agents (fallback if registry is unavailable)
-var defaultAgents = []list.Item{
-	agentInfo{name: "claude", command: "claude", args: []string{"--acp"}, desc: "Anthropic Claude Agent"},
-	agentInfo{name: "gemini", command: "gemini", args: []string{"--acp"}, desc: "Google Gemini Agent"},
-	agentInfo{name: "opencode", command: "opencode", args: []string{"--acp"}, desc: "OpenCode Agent"},
-	agentInfo{name: "vibe", command: "vibe", args: []string{"--acp"}, desc: "Vibe Agent"},
-	agentInfo{name: "codex", command: "openai-codex", args: []string{"--acp"}, desc: "OpenAI Codex Agent"},
-	agentInfo{name: "mock", command: os.Args[0], args: []string{"mock-agent"}, desc: "Internal Mock ACP Agent"},
-}
-
-// Global agents variable that will be populated from registry
-var agents = defaultAgents
-
-// Model definition
+// modelInfo describes a selectable model.
 type modelInfo struct {
 	id   string
 	desc string
@@ -44,54 +30,36 @@ func (m modelInfo) Title() string       { return m.id }
 func (m modelInfo) Description() string { return m.desc }
 func (m modelInfo) FilterValue() string { return m.id }
 
+var defaultAgents = []list.Item{
+	agentInfo{name: "claude", command: "claude", args: []string{"--acp"}, desc: "Anthropic Claude"},
+	agentInfo{name: "gemini", command: "gemini", args: []string{"--acp"}, desc: "Google Gemini"},
+	agentInfo{name: "opencode", command: "opencode", args: []string{"--acp"}, desc: "OpenCode"},
+	agentInfo{name: "codex", command: "openai-codex", args: []string{"--acp"}, desc: "OpenAI Codex"},
+	agentInfo{name: "mock", command: os.Args[0], args: []string{"mock-agent"}, desc: "Built-in mock agent (echo)"},
+}
+
+// agents is the live list, populated from the registry at startup.
+var agents = defaultAgents
+
 var defaultModels = []list.Item{
-	modelInfo{id: "claude-3-5-sonnet", desc: "Anthropic Claude 3.5 Sonnet"},
-	modelInfo{id: "claude-3-opus", desc: "Anthropic Claude 3 Opus"},
+	modelInfo{id: "claude-sonnet-4-6", desc: "Anthropic Claude Sonnet 4.6"},
+	modelInfo{id: "claude-opus-4-6", desc: "Anthropic Claude Opus 4.6"},
 	modelInfo{id: "gemini-1.5-pro", desc: "Google Gemini 1.5 Pro"},
 	modelInfo{id: "gpt-4o", desc: "OpenAI GPT-4o"},
 	modelInfo{id: "deepseek-coder", desc: "DeepSeek Coder V2"},
 }
 
 func main() {
-	// Load agents from registry before starting
 	loadRegistryAgents()
 	Execute()
 }
 
 func loadRegistryAgents() {
-	registryAgents, err := LoadAgentsFromRegistry()
+	loaded, err := LoadAgentsFromRegistry()
 	if err != nil {
-		fmt.Printf("Warning: Failed to load registry agents: %v\n", err)
-		fmt.Println("Using built-in agents instead")
+		fmt.Printf("Warning: registry unavailable (%v), using built-ins\n", err)
 		return
 	}
-	
-	// Replace global agents with registry agents
-	agents = registryAgents
+	agents = loaded
 	fmt.Printf("Loaded %d agents from ACP registry\n", len(agents))
-}
-
-func startTui() {
-	al := list.New(agents, list.NewDefaultDelegate(), 0, 0)
-	al.Title = "Select ACP Agent"
-
-	ml := list.New(defaultModels, list.NewDefaultDelegate(), 0, 0)
-	ml.Title = "Select Model"
-
-	m := model{
-		state:     stateSelectingAgent,
-		agentList: al,
-		modelList: ml,
-		msgChan:   make(chan message, 100),
-	}
-
-	p := tea.NewProgram(&m, tea.WithAltScreen())
-	if err := p.Start(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-type errMsg struct{ err error }
-type successMsg struct {
-	tabIndex int
 }

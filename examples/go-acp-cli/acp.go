@@ -10,63 +10,95 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/coder/acp-go-sdk"
+	acp "github.com/coder/acp-go-sdk"
 )
 
-func runCliMode(agentName, message string) error {
-	var selected agentInfo
-	found := false
-	for _, item := range agents {
-		a := item.(agentInfo)
-		if a.name == agentName {
-			selected = a
-			found = true
-			break
+// ── Event stream ──────────────────────────────────────────────────────────────
+
+// AgentEventType categorizes events published by an AgentSession.
+type AgentEventType int
+
+const (
+	EventMessage    AgentEventType = iota // agent sent a text chunk
+	EventThinking                         // agent reasoning / thought chunk
+	EventToolCall                         // tool invocation started
+	EventToolUpdate                       // tool invocation status changed
+	EventLog                              // raw protocol byte log
+	EventError                            // error inside the session
+	EventReady                            // ACP handshake complete
+	EventClosed                           // session shut down
+)
+
+// AgentEvent is published on the session's Events() channel.
+// ToolCallId and Status are only populated for EventToolCall / EventToolUpdate.
+type AgentEvent struct {
+	Type       AgentEventType
+	Content    string // text chunk, tool title, or empty
+	ToolCallId string // tool call identifier
+	Status     string // "pending" | "in_progress" | "completed" | "failed"
+}
+
+// ── AgentSession ──────────────────────────────────────────────────────────────
+
+// AgentSession manages one ACP subprocess connection.
+// It is fully decoupled from any UI framework — all output flows through Events().
+//
+// Frontier contract (what callers outside this file may use):
+//   - NewAgentSession / Start / Send / SetModel / Close
+//   - Events() for reading output
+//   - SessionId / ModelId string fields (read after Start returns)
+type AgentSession struct {
+	Info      agentInfo
+	SessionId string
+	ModelId   string
+
+	events    chan AgentEvent
+	done      chan struct{}
+	closeOnce sync.Once
+	acpClient *acp.ClientSideConnection
+	agentCmd  *exec.Cmd
+	mu        sync.Mutex
+}
+
+// NewAgentSession allocates a session. Call Start to launch the subprocess.
+func NewAgentSession(info agentInfo) *AgentSession {
+	return &AgentSession{
+		Info:   info,
+		events: make(chan AgentEvent, 256),
+		done:   make(chan struct{}),
+	}
+}
+
+// Events returns a read-only stream of AgentEvents.
+func (s *AgentSession) Events() <-chan AgentEvent {
+	return s.events
+}
+
+// emit writes an event without blocking; silently drops it if the session is closing.
+func (s *AgentSession) emit(e AgentEvent) {
+	select {
+	case s.events <- e:
+	case <-s.done:
+	}
+}
+
+// Start launches the agent subprocess, performs the ACP handshake, and opens a session.
+// Blocks until the session is established or an error occurs.
+// On success it emits EventReady; on failure it returns an error.
+func (s *AgentSession) Start(ctx context.Context, cwd string) error {
+	execCmd := s.Info.command
+	if strings.HasPrefix(execCmd, "./") {
+		if base := strings.TrimPrefix(execCmd, "./"); isInPath(base) {
+			execCmd = base
 		}
 	}
 
-	if !found {
-		return fmt.Errorf("agent not found: %s", agentName)
-	}
-	
-	// Check if the agent binary exists and is executable
-	if !isAgentAvailable(selected) {
-		return fmt.Errorf("agent %s not found in PATH or not executable", selected.name)
+	args := s.Info.args
+	if execCmd == "opencode" && len(args) == 0 {
+		args = []string{"acp"}
 	}
 
-	// Use longer timeout for opencode as it might need more time to initialize
-	timeoutDuration := 30 * time.Second
-	if selected.name == "opencode" {
-		timeoutDuration = 60 * time.Second // 1 minute for opencode
-	}
-	
-	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
-	defer cancel()
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	// Fix command if it starts with "./" but the binary is in PATH
-	execCommand := selected.command
-	if strings.HasPrefix(execCommand, "./") {
-		baseCmd := strings.TrimPrefix(execCommand, "./")
-		if _, err := exec.LookPath(baseCmd); err == nil {
-			execCommand = baseCmd
-		}
-	}
-
-	// For opencode specifically, ensure it has the "acp" argument
-	finalArgs := selected.args
-	if execCommand == "opencode" && len(finalArgs) == 0 {
-		finalArgs = []string{"acp"}
-	}
-
-	cmd := exec.CommandContext(ctx, execCommand, finalArgs...)
+	cmd := exec.CommandContext(ctx, execCmd, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -75,41 +107,53 @@ func runCliMode(agentName, message string) error {
 	if err != nil {
 		return err
 	}
-
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	s.agentCmd = cmd
 
-	client := &cliClient{done: make(chan struct{})}
-	conn := acp.NewClientSideConnection(client, stdin, stdout)
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, rerr := stderr.Read(buf)
+			if n > 0 {
+				s.emit(AgentEvent{Type: EventLog, Content: "STDERR: " + string(buf[:n])})
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
 
-	// Initialize ACP
+	client := &sessionClient{session: s}
+	conn := acp.NewClientSideConnection(
+		client,
+		&loggingWriter{Writer: stdin, session: s},
+		&loggingReader{Reader: stdout, session: s},
+	)
+	s.acpClient = conn
+
 	initResp, err := conn.Initialize(ctx, acp.InitializeRequest{
 		ClientCapabilities: acp.ClientCapabilities{},
-		ClientInfo: &acp.Implementation{
-			Name:    "sample-acp-cli",
-			Version: "0.1.0",
-		},
-		ProtocolVersion: acp.ProtocolVersionNumber,
+		ClientInfo:         &acp.Implementation{Name: "acp-client", Version: "0.1.0"},
+		ProtocolVersion:    acp.ProtocolVersionNumber,
 	})
 	if err != nil {
 		return err
 	}
 
-	// Handle authentication if required
 	if len(initResp.AuthMethods) > 0 {
-		if selected.name == "opencode" {
-			return fmt.Errorf("opencode requires authentication. Please run 'opencode auth login' in a terminal first, then try again")
-		}
-		_, err = conn.Authenticate(ctx, acp.AuthenticateRequest{
+		if _, err = conn.Authenticate(ctx, acp.AuthenticateRequest{
 			MethodId: initResp.AuthMethods[0].Id,
-		})
-		if err != nil {
+		}); err != nil {
 			return err
 		}
 	}
 
-	// Start session
 	resp, err := conn.NewSession(ctx, acp.NewSessionRequest{
 		Cwd:        cwd,
 		McpServers: []acp.McpServer{},
@@ -117,326 +161,299 @@ func runCliMode(agentName, message string) error {
 	if err != nil {
 		return err
 	}
+	if resp.SessionId == "" {
+		return fmt.Errorf("agent returned empty session ID")
+	}
+	s.SessionId = string(resp.SessionId)
 
-	// Send prompt
-	_, err = conn.Prompt(ctx, acp.PromptRequest{
-		SessionId: resp.SessionId,
-		Prompt: []acp.ContentBlock{
-			acp.TextBlock(message),
-		},
+	s.emit(AgentEvent{Type: EventReady})
+	return nil
+}
+
+// Send dispatches a user prompt to the agent.
+// The response arrives asynchronously as EventMessage events on Events().
+func (s *AgentSession) Send(ctx context.Context, content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.acpClient == nil || s.SessionId == "" {
+		return fmt.Errorf("session not ready")
+	}
+	_, err := s.acpClient.Prompt(ctx, acp.PromptRequest{
+		SessionId: acp.SessionId(s.SessionId),
+		Prompt:    []acp.ContentBlock{acp.TextBlock(content)},
 	})
-	if err != nil {
-		return err
-	}
-
-	// Wait for response or timeout
-	select {
-	case <-client.done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	return nil
+	return err
 }
 
-type cliClient struct {
-	done    chan struct{}
-	doneOnce sync.Once
+// SetModel changes the active model for this session.
+func (s *AgentSession) SetModel(ctx context.Context, modelId string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.acpClient == nil || s.SessionId == "" {
+		return fmt.Errorf("session not ready")
+	}
+	_, err := s.acpClient.SetSessionModel(ctx, acp.SetSessionModelRequest{
+		SessionId: acp.SessionId(s.SessionId),
+		ModelId:   acp.ModelId(modelId),
+	})
+	if err == nil {
+		s.ModelId = modelId
+	}
+	return err
 }
 
-func (c *cliClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
+// Close terminates the subprocess and unblocks any goroutine blocked on Events().
+func (s *AgentSession) Close() {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		if s.agentCmd != nil && s.agentCmd.Process != nil {
+			_ = s.agentCmd.Process.Kill()
+		}
+		select {
+		case s.events <- AgentEvent{Type: EventClosed}:
+		default:
+		}
+	})
+}
+
+// ── acp.Client implementation ─────────────────────────────────────────────────
+
+type sessionClient struct{ session *AgentSession }
+
+func (c *sessionClient) ReadTextFile(_ context.Context, _ acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
 	return acp.ReadTextFileResponse{}, nil
 }
-func (c *cliClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
+func (c *sessionClient) WriteTextFile(_ context.Context, _ acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
 	return acp.WriteTextFileResponse{}, nil
 }
-func (c *cliClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+func (c *sessionClient) RequestPermission(_ context.Context, _ acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	return acp.RequestPermissionResponse{}, nil
 }
-func (c *cliClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
-	update := params.Update
-	if update.AgentMessageChunk != nil && update.AgentMessageChunk.Content.Text != nil {
-		fmt.Printf("Agent: %s\n", update.AgentMessageChunk.Content.Text.Text)
-		c.doneOnce.Do(func() { close(c.done) })
+
+func (c *sessionClient) SessionUpdate(_ context.Context, params acp.SessionNotification) error {
+	u := params.Update
+	switch {
+	case u.AgentMessageChunk != nil && u.AgentMessageChunk.Content.Text != nil:
+		c.session.emit(AgentEvent{
+			Type:    EventMessage,
+			Content: u.AgentMessageChunk.Content.Text.Text,
+		})
+
+	case u.AgentThoughtChunk != nil && u.AgentThoughtChunk.Content.Text != nil:
+		c.session.emit(AgentEvent{
+			Type:    EventThinking,
+			Content: u.AgentThoughtChunk.Content.Text.Text,
+		})
+
+	case u.ToolCall != nil:
+		c.session.emit(AgentEvent{
+			Type:       EventToolCall,
+			Content:    u.ToolCall.Title,
+			ToolCallId: string(u.ToolCall.ToolCallId),
+			Status:     string(u.ToolCall.Status),
+		})
+
+	case u.ToolCallUpdate != nil:
+		status := ""
+		if u.ToolCallUpdate.Status != nil {
+			status = string(*u.ToolCallUpdate.Status)
+		}
+		title := ""
+		if u.ToolCallUpdate.Title != nil {
+			title = *u.ToolCallUpdate.Title
+		}
+		c.session.emit(AgentEvent{
+			Type:       EventToolUpdate,
+			Content:    title,
+			ToolCallId: string(u.ToolCallUpdate.ToolCallId),
+			Status:     status,
+		})
 	}
 	return nil
 }
-func (c *cliClient) CreateTerminal(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
+
+func (c *sessionClient) CreateTerminal(_ context.Context, _ acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
 	return acp.CreateTerminalResponse{}, nil
 }
-func (c *cliClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
+func (c *sessionClient) KillTerminalCommand(_ context.Context, _ acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
 	return acp.KillTerminalCommandResponse{}, nil
 }
-func (c *cliClient) TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
+func (c *sessionClient) TerminalOutput(_ context.Context, _ acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
 	return acp.TerminalOutputResponse{}, nil
 }
-func (c *cliClient) ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
+func (c *sessionClient) ReleaseTerminal(_ context.Context, _ acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
 	return acp.ReleaseTerminalResponse{}, nil
 }
-func (c *cliClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
+func (c *sessionClient) WaitForTerminalExit(_ context.Context, _ acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
 	return acp.WaitForTerminalExitResponse{}, nil
 }
 
-func (m *model) startAgent(selected agentInfo) tea.Cmd {
-	return tea.Batch(
-		func() tea.Msg {
-			ctx := context.Background()
-
-			cwd, err := os.Getwd()
-			if err != nil {
-				return errMsg{err}
-			}
-
-			cmd := exec.CommandContext(ctx, selected.command, selected.args...)
-
-			stdin, err := cmd.StdinPipe()
-			if err != nil {
-				return errMsg{err}
-			}
-			stdout, err := cmd.StdoutPipe()
-			if err != nil {
-				return errMsg{err}
-			}
-			stderr, err := cmd.StderrPipe()
-			if err != nil {
-				return errMsg{err}
-			}
-
-			if err := cmd.Start(); err != nil {
-				return errMsg{err}
-			}
-
-			// Initialize tab
-			ti := textinput.New()
-			ti.Placeholder = "Type a message..."
-			ti.Focus()
-
-			tabIndex := len(m.tabs)
-			newTab := &tab{
-				selected: selected,
-				input:    ti,
-				viewport: viewport.New(0, 0),
-				logPort:  viewport.New(0, 0),
-				agentCmd: cmd,
-			}
-			m.tabs = append(m.tabs, newTab)
-			m.activeTab = tabIndex
-			m.updateLayout()
-
-			// Create a wrapper that logs everything
-			loggingReader := &loggingReader{
-				Reader:   stdout,
-				log:      m.msgChan,
-				tabIndex: tabIndex,
-			}
-			loggingWriter := &loggingWriter{
-				Writer:   stdin,
-				log:      m.msgChan,
-				tabIndex: tabIndex,
-			}
-
-			client := &tuiClient{msgChan: m.msgChan, tabIndex: tabIndex}
-			conn := acp.NewClientSideConnection(client, loggingWriter, loggingReader)
-			newTab.acpClient = conn
-
-			// Read stderr in background
-			go func() {
-				buf := make([]byte, 1024)
-				for {
-					n, err := stderr.Read(buf)
-					if n > 0 {
-						m.msgChan <- message{tabIndex: tabIndex, sender: "AgentStderr", content: string(buf[:n]), isLog: true}
-					}
-					if err != nil {
-						break
-					}
-				}
-			}()
-
-			// Initialize ACP
-			_, err = conn.Initialize(ctx, acp.InitializeRequest{
-				ClientCapabilities: acp.ClientCapabilities{},
-				ClientInfo: &acp.Implementation{
-					Name:    "sample-acp-tui",
-					Version: "0.1.0",
-				},
-				ProtocolVersion: acp.ProtocolVersionNumber,
-			})
-			if err != nil {
-				return errMsg{err}
-			}
-
-			// Start session
-			resp, err := conn.NewSession(ctx, acp.NewSessionRequest{
-				Cwd:        cwd,
-				McpServers: []acp.McpServer{},
-			})
-			if err != nil {
-				return errMsg{err}
-			}
-			newTab.sessionId = resp.SessionId
-
-			return successMsg{tabIndex: tabIndex}
-		},
-		m.waitForMsg(),
-	)
-}
-
-func (m *model) setAgentModel(tabIndex int) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		t := m.tabs[tabIndex]
-		_, err := t.acpClient.SetSessionModel(ctx, acp.SetSessionModelRequest{
-			SessionId: t.sessionId,
-			ModelId:   t.modelId,
-		})
-		if err != nil {
-			return errMsg{err}
-		}
-		return nil
-	}
-}
-
-func (m *model) waitForMsg() tea.Cmd {
-	return func() tea.Msg {
-		return <-m.msgChan
-	}
-}
-
-func (m *model) sendACPMessage(tabIndex int, content string) tea.Cmd {
-	return func() tea.Msg {
-		t := m.tabs[tabIndex]
-		t.acpMu.Lock()
-		defer t.acpMu.Unlock()
-
-		if t.acpClient == nil {
-			return errMsg{fmt.Errorf("ACP client not initialized")}
-		}
-
-		_, err := t.acpClient.Prompt(context.Background(), acp.PromptRequest{
-			SessionId: t.sessionId,
-			Prompt: []acp.ContentBlock{
-				acp.TextBlock(content),
-			},
-		})
-		if err != nil {
-			return errMsg{err}
-		}
-
-		return nil
-	}
-}
-
-// tuiClient implements acp.Client
-type tuiClient struct {
-	msgChan  chan message
-	tabIndex int
-}
-
-func (c *tuiClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
-	return acp.ReadTextFileResponse{}, nil
-}
-func (c *tuiClient) WriteTextFile(ctx context.Context, params acp.WriteTextFileRequest) (acp.WriteTextFileResponse, error) {
-	return acp.WriteTextFileResponse{}, nil
-}
-func (c *tuiClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-	return acp.RequestPermissionResponse{}, nil
-}
-func (c *tuiClient) SessionUpdate(ctx context.Context, params acp.SessionNotification) error {
-	update := params.Update
-	if update.AgentMessageChunk != nil && update.AgentMessageChunk.Content.Text != nil {
-		c.msgChan <- message{tabIndex: c.tabIndex, sender: "Agent", content: update.AgentMessageChunk.Content.Text.Text}
-	}
-	return nil
-}
-func (c *tuiClient) CreateTerminal(ctx context.Context, params acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error) {
-	return acp.CreateTerminalResponse{}, nil
-}
-func (c *tuiClient) KillTerminalCommand(ctx context.Context, params acp.KillTerminalCommandRequest) (acp.KillTerminalCommandResponse, error) {
-	return acp.KillTerminalCommandResponse{}, nil
-}
-func (c *tuiClient) TerminalOutput(ctx context.Context, params acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error) {
-	return acp.TerminalOutputResponse{}, nil
-}
-func (c *tuiClient) ReleaseTerminal(ctx context.Context, params acp.ReleaseTerminalRequest) (acp.ReleaseTerminalResponse, error) {
-	return acp.ReleaseTerminalResponse{}, nil
-}
-func (c *tuiClient) WaitForTerminalExit(ctx context.Context, params acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error) {
-	return acp.WaitForTerminalExitResponse{}, nil
-}
+// ── Protocol loggers ──────────────────────────────────────────────────────────
 
 type loggingReader struct {
 	io.Reader
-	log      chan message
-	tabIndex int
+	session *AgentSession
 }
 
-func (l *loggingReader) Read(p []byte) (n int, err error) {
-	n, err = l.Reader.Read(p)
+func (l *loggingReader) Read(p []byte) (int, error) {
+	n, err := l.Reader.Read(p)
 	if n > 0 {
-		l.log <- message{tabIndex: l.tabIndex, content: fmt.Sprintf("RECV: %s", string(p[:n])), isLog: true}
+		l.session.emit(AgentEvent{Type: EventLog, Content: "RECV: " + string(p[:n])})
 	}
-	return
+	return n, err
 }
 
 type loggingWriter struct {
 	io.Writer
-	log      chan message
-	tabIndex int
+	session *AgentSession
 }
 
-func (l *loggingWriter) Write(p []byte) (n int, err error) {
-	n, err = l.Writer.Write(p)
+func (l *loggingWriter) Write(p []byte) (int, error) {
+	n, err := l.Writer.Write(p)
 	if n > 0 {
-		l.log <- message{tabIndex: l.tabIndex, content: fmt.Sprintf("SEND: %s", string(p[:n])), isLog: true}
+		l.session.emit(AgentEvent{Type: EventLog, Content: "SEND: " + string(p[:n])})
 	}
-	return
+	return n, err
 }
 
-// Mock Agent Implementation
-type mockAgent struct {
-	conn *acp.AgentSideConnection
+// ── CLI (non-interactive) mode ────────────────────────────────────────────────
+
+func runCliMode(agentName, promptText string) error {
+	var selected agentInfo
+	for _, item := range agents {
+		if a := item.(agentInfo); a.name == agentName {
+			selected = a
+			break
+		}
+	}
+	if selected.name == "" {
+		return fmt.Errorf("agent not found: %s", agentName)
+	}
+	if !isAgentAvailable(selected) {
+		return fmt.Errorf("agent %q is not installed or not in PATH", selected.name)
+	}
+
+	timeout := 30 * time.Second
+	if selected.name == "opencode" {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+
+	s := NewAgentSession(selected)
+	if err := s.Start(ctx, cwd); err != nil {
+		return err
+	}
+	if err := s.Send(ctx, promptText); err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case e := <-s.Events():
+			switch e.Type {
+			case EventMessage:
+				fmt.Printf("Agent: %s\n", e.Content)
+				s.Close()
+				return nil
+			case EventError:
+				return fmt.Errorf("%s", e.Content)
+			case EventClosed:
+				return nil
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
-func (a *mockAgent) Authenticate(ctx context.Context, params acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
+// ── Mock agent (built-in echo agent with simulated thinking + tools) ──────────
+
+type mockAgent struct{ conn *acp.AgentSideConnection }
+
+func (a *mockAgent) Authenticate(_ context.Context, _ acp.AuthenticateRequest) (acp.AuthenticateResponse, error) {
 	return acp.AuthenticateResponse{}, nil
 }
-func (a *mockAgent) Initialize(ctx context.Context, params acp.InitializeRequest) (acp.InitializeResponse, error) {
+func (a *mockAgent) Initialize(_ context.Context, _ acp.InitializeRequest) (acp.InitializeResponse, error) {
 	return acp.InitializeResponse{
-		ProtocolVersion: acp.ProtocolVersionNumber,
+		ProtocolVersion:   acp.ProtocolVersionNumber,
 		AgentCapabilities: acp.AgentCapabilities{},
-		AgentInfo: &acp.Implementation{
-			Name:    "mock-agent",
-			Version: "0.1.0",
-		},
+		AgentInfo:         &acp.Implementation{Name: "mock-agent", Version: "0.1.0"},
 	}, nil
 }
-func (a *mockAgent) Cancel(ctx context.Context, params acp.CancelNotification) error {
-	return nil
-}
-func (a *mockAgent) NewSession(ctx context.Context, params acp.NewSessionRequest) (acp.NewSessionResponse, error) {
+func (a *mockAgent) Cancel(_ context.Context, _ acp.CancelNotification) error { return nil }
+func (a *mockAgent) NewSession(_ context.Context, _ acp.NewSessionRequest) (acp.NewSessionResponse, error) {
 	return acp.NewSessionResponse{SessionId: "mock-session"}, nil
 }
+
 func (a *mockAgent) Prompt(ctx context.Context, params acp.PromptRequest) (acp.PromptResponse, error) {
-	// Echo back via SessionUpdate
 	text := ""
 	if len(params.Prompt) > 0 && params.Prompt[0].Text != nil {
 		text = params.Prompt[0].Text.Text
 	}
+
+	sid := params.SessionId
+
+	// 1. Simulate a reasoning / thought chunk.
 	_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
-		SessionId: params.SessionId,
+		SessionId: sid,
+		Update: acp.SessionUpdate{
+			AgentThoughtChunk: &acp.SessionUpdateAgentThoughtChunk{
+				Content: acp.TextBlock(
+					"The user said: \"" + text + "\". " +
+						"This is a mock agent, so the right answer is to echo it back. " +
+						"No further reasoning required.",
+				),
+			},
+		},
+	})
+
+	// 2. Simulate a tool call (in_progress → completed).
+	toolId := acp.ToolCallId("mock-echo-1")
+	_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: sid,
+		Update: acp.SessionUpdate{
+			ToolCall: &acp.SessionUpdateToolCall{
+				ToolCallId: toolId,
+				Title:      "echo \"" + text + "\"",
+				Status:     acp.ToolCallStatusInProgress,
+			},
+		},
+	})
+
+	completed := acp.ToolCallStatusCompleted
+	_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: sid,
+		Update: acp.SessionUpdate{
+			ToolCallUpdate: &acp.SessionToolCallUpdate{
+				ToolCallId: toolId,
+				Status:     &completed,
+			},
+		},
+	})
+
+	// 3. Final text response.
+	_ = a.conn.SessionUpdate(ctx, acp.SessionNotification{
+		SessionId: sid,
 		Update: acp.SessionUpdate{
 			AgentMessageChunk: &acp.SessionUpdateAgentMessageChunk{
 				Content: acp.TextBlock("Echo: " + text),
 			},
 		},
 	})
+
 	return acp.PromptResponse{}, nil
 }
-func (a *mockAgent) SetSessionMode(ctx context.Context, params acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
+
+func (a *mockAgent) SetSessionMode(_ context.Context, _ acp.SetSessionModeRequest) (acp.SetSessionModeResponse, error) {
 	return acp.SetSessionModeResponse{}, nil
 }
-func (a *mockAgent) SetSessionModel(ctx context.Context, params acp.SetSessionModelRequest) (acp.SetSessionModelResponse, error) {
+func (a *mockAgent) SetSessionModel(_ context.Context, _ acp.SetSessionModelRequest) (acp.SetSessionModelResponse, error) {
 	return acp.SetSessionModelResponse{}, nil
 }
 
@@ -447,36 +464,27 @@ func runMockAgent() {
 	<-conn.Done()
 }
 
-func isAgentAvailable(agent agentInfo) bool {
-	// For npx/uvx commands, we can't easily check availability without running them
-	// For binary commands, check if they exist in PATH
-	if agent.command == "npx" || agent.command == "uvx" {
-		// These are package managers, assume they're available if the command exists
-		if _, err := exec.LookPath(agent.command); err != nil {
-			return false
-		}
-		return true
-	}
-	
-	// For direct binary commands, check if the binary exists
-	if strings.Contains(agent.command, "/") {
-		// It's a path, check if file exists and is executable
-		if _, err := os.Stat(agent.command); err != nil {
-			// If the path starts with "./", also try without it
-			if strings.HasPrefix(agent.command, "./") {
-				baseCmd := strings.TrimPrefix(agent.command, "./")
-				if _, err := exec.LookPath(baseCmd); err == nil {
-					return true
-				}
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func isInPath(cmd string) bool {
+	_, err := exec.LookPath(cmd)
+	return err == nil
+}
+
+func isAgentAvailable(info agentInfo) bool {
+	cmd := info.command
+	switch {
+	case cmd == "npx" || cmd == "uvx":
+		return isInPath(cmd)
+	case strings.Contains(cmd, "/"):
+		if _, err := os.Stat(cmd); err != nil {
+			if strings.HasPrefix(cmd, "./") {
+				return isInPath(strings.TrimPrefix(cmd, "./"))
 			}
 			return false
 		}
 		return true
+	default:
+		return isInPath(cmd)
 	}
-	
-	// It's a command name, check if it's in PATH
-	if _, err := exec.LookPath(agent.command); err != nil {
-		return false
-	}
-	return true
 }

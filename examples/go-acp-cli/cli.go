@@ -25,7 +25,13 @@ var rootCmd = &cobra.Command{
 			return
 		}
 		
-		// If no CLI args provided, start TUI
+		// If agent flag is provided without message, start TUI in chat mode with that agent
+		if agentFlag != "" {
+			startTuiWithAgent(agentFlag)
+			return
+		}
+		
+		// If no CLI args provided, start TUI in selection mode
 		startTui()
 	},
 }
