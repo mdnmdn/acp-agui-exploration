@@ -1,0 +1,39 @@
+{
+  "name": "@acp-agui-bridge/copilotkit-webcomponent",
+  "version": "1.0.0",
+  "description": "Web component wrapper for CopilotKit frontend",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --emitDeclarationOnly && vite build",
+    "dev": "vite",
+    "preview": "vite preview",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "^1.53.0",
+    "@copilotkit/react-ui": "^1.53.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.8.3",
+    "vite": "^6.0.0"
+  },
+  "keywords": ["copilotkit", "webcomponent", "ai", "chat"],
+  "author": "ACP AGUI Bridge Project",
+  "license": "MIT"
+}

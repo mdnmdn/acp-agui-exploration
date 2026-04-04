@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CopilotKit Web Component Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .demo-section {
+            padding: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .demo-section:last-child {
+            border-bottom: none;
+        }
+        h2 {
+            color: #333;
+            margin-top: 0;
+        }
+        acp-copilotkit {
+            display: block;
+            width: 100%;
+            min-height: 100px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 20px;
+        }
+        .controls input, .controls select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .controls button {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .controls button:hover {
+            background: #5a67d8;
+        }
+        .code-box {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 16px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+        }
+        #event-log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 12px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        #event-log .event {
+            margin-bottom: 4px;
+            padding: 2px 0;
+            border-bottom: 1px solid #333;
+        }
+        #event-log .event:last-child {
+            border-bottom: none;
+        }
+        #event-log .event-type {
+            color: #4ec9b0;
+            font-weight: bold;
+        }
+        #event-log .event-detail {
+            color: #ce9178;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>CopilotKit Web Component Demo</h1>
+            <p>Easy integration of AI chat capabilities into any web page</p>
+        </header>
+        
+        <div class="demo-section">
+            <h2>Demo 1: Sidebar Mode</h2>
+            <acp-copilotkit 
+                id="demo-sidebar"
+                url="http://localhost:4000/copilotkit"
+                mode="sidebar"
+                labels-title="AI Assistant"
+                labels-initial="Hi! I'm your AI assistant. How can I help you today?"
+                labels-placeholder="Type your message here..."
+                default-open="true">
+            </acp-copilotkit>
+        </div>
+
+        <div class="demo-section">
+            <h2>Demo 2: Chat Mode (inline)</h2>
+            <acp-copilotkit 
+                id="demo-chat"
+                url="http://localhost:4000/copilotkit"
+                mode="chat"
+                labels-title="Chat Support"
+                labels-initial="Hello! Need help with something?"
+                labels-placeholder="Ask me anything...">
+            </acp-copilotkit>
+        </div>
+
+        <div class="demo-section">
+            <h2>Demo 3: Popup Mode</h2>
+            <acp-copilotkit 
+                id="demo-popup"
+                url="http://localhost:4000/copilotkit"
+                mode="popup"
+                labels-title="Help Bot"
+                labels-initial="Got questions? I'm here to help!"
+                labels-placeholder="What do you need assistance with?"
+                default-open="false">
+            </acp-copilotkit>
+        </div>
+
+        <div class="demo-section">
+            <h2>Interactive Controls</h2>
+            <div class="controls">
+                <input type="text" id="url-input" placeholder="Runtime URL" value="http://localhost:4000/copilotkit">
+                <input type="text" id="apikey-input" placeholder="API Key (optional)">
+                <select id="mode-select">
+                    <option value="sidebar">Sidebar</option>
+                    <option value="chat">Chat</option>
+                    <option value="popup">Popup</option>
+                </select>
+                <button id="apply-btn">Apply to All</button>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>Event Log</h2>
+            <div id="event-log">
+                <div class="event"><span class="event-type">info</span>: Waiting for events...</div>
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>Usage Instructions</h2>
+            <div class="code-box">
+                &lt;!-- 1. Import the web component --&gt;<br>
+                &lt;script type="module" src="./dist/index.js"&gt;&lt;/script&gt;<br><br>
+                
+                &lt;!-- 2. Use the custom element --&gt;<br>
+                &lt;acp-copilotkit<br>
+                &nbsp;&nbsp;url="http://localhost:4000/copilotkit"<br>
+                &nbsp;&nbsp;apikey="your-public-key"<br>
+                &nbsp;&nbsp;mode="sidebar"<br>
+                &nbsp;&nbsp;labels-title="My Assistant"<br>
+                &nbsp;&nbsp;labels-initial="Hello!"<br>
+                &nbsp;&nbsp;labels-placeholder="Type a message..."<br>
+                &nbsp;&nbsp;default-open="true"<br>
+                &gt;&lt;/acp-copilotkit&gt;<br><br>
+                
+                &lt;!-- 3. Listen for events --&gt;<br>
+                &lt;script&gt;<br>
+                &nbsp;&nbsp;const el = document.querySelector('acp-copilotkit');<br>
+                &nbsp;&nbsp;el.addEventListener('copilotkit:message-sent', (e) => {<br>
+                &nbsp;&nbsp;&nbsp;&nbsp;console.log('User sent:', e.detail.message);<br>
+                &nbsp;&nbsp;});<br>
+                &nbsp;&nbsp;el.addEventListener('copilotkit:open', () => console.log('Chat opened'));<br>
+                &nbsp;&nbsp;el.addEventListener('copilotkit:close', () => console.log('Chat closed'));<br>
+                &lt;/script&gt;
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import './dist/index.js';
+        
+        const eventLog = document.getElementById('event-log');
+        
+        function logEvent(type, detail) {
+            const entry = document.createElement('div');
+            entry.className = 'event';
+            const time = new Date().toLocaleTimeString();
+            const detailStr = detail ? JSON.stringify(detail) : '';
+            entry.innerHTML = `<span class="event-type">[${time}] ${type}</span> <span class="event-detail">${detailStr}</span>`;
+            
+            if (eventLog.querySelector('.event-type')) {
+                eventLog.innerHTML = '';
+            }
+            eventLog.appendChild(entry);
+            eventLog.scrollTop = eventLog.scrollHeight;
+        }
+        
+        const events = [
+            'copilotkit:open',
+            'copilotkit:close',
+            'copilotkit:message-sent',
+            'copilotkit:feedback',
+            'copilotkit:copy',
+            'copilotkit:regenerate',
+            'copilotkit:rewrite',
+            'copilotkit:generation-changed',
+        ];
+        
+        document.querySelectorAll('acp-copilotkit').forEach(el => {
+            events.forEach(eventName => {
+                el.addEventListener(eventName, (e) => {
+                    logEvent(eventName.replace('copilotkit:', ''), e.detail);
+                });
+            });
+        });
+        
+        document.getElementById('apply-btn').addEventListener('click', () => {
+            const url = document.getElementById('url-input').value;
+            const apikey = document.getElementById('apikey-input').value;
+            const mode = document.getElementById('mode-select').value;
+            
+            document.querySelectorAll('acp-copilotkit').forEach(el => {
+                el.setAttribute('url', url);
+                if (apikey) el.setAttribute('apikey', apikey);
+                el.setAttribute('mode', mode);
+            });
+            
+            console.log('Settings applied:', { url, apikey, mode });
+        });
+    </script>
+</body>
+</html>

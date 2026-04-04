@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -20,7 +21,8 @@ func (a agentInfo) Title() string       { return a.name }
 func (a agentInfo) Description() string { return a.desc }
 func (a agentInfo) FilterValue() string { return a.name }
 
-var agents = []list.Item{
+// Default built-in agents (fallback if registry is unavailable)
+var defaultAgents = []list.Item{
 	agentInfo{name: "claude", command: "claude", args: []string{"--acp"}, desc: "Anthropic Claude Agent"},
 	agentInfo{name: "gemini", command: "gemini", args: []string{"--acp"}, desc: "Google Gemini Agent"},
 	agentInfo{name: "opencode", command: "opencode", args: []string{"--acp"}, desc: "OpenCode Agent"},
@@ -28,6 +30,9 @@ var agents = []list.Item{
 	agentInfo{name: "codex", command: "openai-codex", args: []string{"--acp"}, desc: "OpenAI Codex Agent"},
 	agentInfo{name: "mock", command: os.Args[0], args: []string{"mock-agent"}, desc: "Internal Mock ACP Agent"},
 }
+
+// Global agents variable that will be populated from registry
+var agents = defaultAgents
 
 // Model definition
 type modelInfo struct {
@@ -48,7 +53,22 @@ var defaultModels = []list.Item{
 }
 
 func main() {
+	// Load agents from registry before starting
+	loadRegistryAgents()
 	Execute()
+}
+
+func loadRegistryAgents() {
+	registryAgents, err := LoadAgentsFromRegistry()
+	if err != nil {
+		fmt.Printf("Warning: Failed to load registry agents: %v\n", err)
+		fmt.Println("Using built-in agents instead")
+		return
+	}
+	
+	// Replace global agents with registry agents
+	agents = registryAgents
+	fmt.Printf("Loaded %d agents from ACP registry\n", len(agents))
 }
 
 func startTui() {

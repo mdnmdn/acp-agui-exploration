@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -29,8 +31,19 @@ func runCliMode(agentName, message string) error {
 	if !found {
 		return fmt.Errorf("agent not found: %s", agentName)
 	}
+	
+	// Check if the agent binary exists and is executable
+	if !isAgentAvailable(selected) {
+		return fmt.Errorf("agent %s not found in PATH or not executable", selected.name)
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Use longer timeout for opencode as it might need more time to initialize
+	timeoutDuration := 30 * time.Second
+	if selected.name == "opencode" {
+		timeoutDuration = 60 * time.Second // 1 minute for opencode
+	}
+	
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDuration)
 	defer cancel()
 
 	cwd, err := os.Getwd()
@@ -38,7 +51,22 @@ func runCliMode(agentName, message string) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, selected.command, selected.args...)
+	// Fix command if it starts with "./" but the binary is in PATH
+	execCommand := selected.command
+	if strings.HasPrefix(execCommand, "./") {
+		baseCmd := strings.TrimPrefix(execCommand, "./")
+		if _, err := exec.LookPath(baseCmd); err == nil {
+			execCommand = baseCmd
+		}
+	}
+
+	// For opencode specifically, ensure it has the "acp" argument
+	finalArgs := selected.args
+	if execCommand == "opencode" && len(finalArgs) == 0 {
+		finalArgs = []string{"acp"}
+	}
+
+	cmd := exec.CommandContext(ctx, execCommand, finalArgs...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -56,7 +84,7 @@ func runCliMode(agentName, message string) error {
 	conn := acp.NewClientSideConnection(client, stdin, stdout)
 
 	// Initialize ACP
-	_, err = conn.Initialize(ctx, acp.InitializeRequest{
+	initResp, err := conn.Initialize(ctx, acp.InitializeRequest{
 		ClientCapabilities: acp.ClientCapabilities{},
 		ClientInfo: &acp.Implementation{
 			Name:    "sample-acp-cli",
@@ -66,6 +94,16 @@ func runCliMode(agentName, message string) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	// Handle authentication if required (skip for opencode as it has a bug)
+	if len(initResp.AuthMethods) > 0 && selected.name != "opencode" {
+		_, err = conn.Authenticate(ctx, acp.AuthenticateRequest{
+			MethodId: initResp.AuthMethods[0].Id,
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	// Start session
@@ -99,7 +137,8 @@ func runCliMode(agentName, message string) error {
 }
 
 type cliClient struct {
-	done chan struct{}
+	done    chan struct{}
+	doneOnce sync.Once
 }
 
 func (c *cliClient) ReadTextFile(ctx context.Context, params acp.ReadTextFileRequest) (acp.ReadTextFileResponse, error) {
@@ -115,7 +154,7 @@ func (c *cliClient) SessionUpdate(ctx context.Context, params acp.SessionNotific
 	update := params.Update
 	if update.AgentMessageChunk != nil && update.AgentMessageChunk.Content.Text != nil {
 		fmt.Printf("Agent: %s\n", update.AgentMessageChunk.Content.Text.Text)
-		close(c.done)
+		c.doneOnce.Do(func() { close(c.done) })
 	}
 	return nil
 }
@@ -403,4 +442,38 @@ func runMockAgent() {
 	conn := acp.NewAgentSideConnection(agent, os.Stdout, os.Stdin)
 	agent.conn = conn
 	<-conn.Done()
+}
+
+func isAgentAvailable(agent agentInfo) bool {
+	// For npx/uvx commands, we can't easily check availability without running them
+	// For binary commands, check if they exist in PATH
+	if agent.command == "npx" || agent.command == "uvx" {
+		// These are package managers, assume they're available if the command exists
+		if _, err := exec.LookPath(agent.command); err != nil {
+			return false
+		}
+		return true
+	}
+	
+	// For direct binary commands, check if the binary exists
+	if strings.Contains(agent.command, "/") {
+		// It's a path, check if file exists and is executable
+		if _, err := os.Stat(agent.command); err != nil {
+			// If the path starts with "./", also try without it
+			if strings.HasPrefix(agent.command, "./") {
+				baseCmd := strings.TrimPrefix(agent.command, "./")
+				if _, err := exec.LookPath(baseCmd); err == nil {
+					return true
+				}
+			}
+			return false
+		}
+		return true
+	}
+	
+	// It's a command name, check if it's in PATH
+	if _, err := exec.LookPath(agent.command); err != nil {
+		return false
+	}
+	return true
 }
