@@ -96,8 +96,11 @@ func runCliMode(agentName, message string) error {
 		return err
 	}
 
-	// Handle authentication if required (skip for opencode as it has a bug)
-	if len(initResp.AuthMethods) > 0 && selected.name != "opencode" {
+	// Handle authentication if required
+	if len(initResp.AuthMethods) > 0 {
+		if selected.name == "opencode" {
+			return fmt.Errorf("opencode requires authentication. Please run 'opencode auth login' in a terminal first, then try again")
+		}
 		_, err = conn.Authenticate(ctx, acp.AuthenticateRequest{
 			MethodId: initResp.AuthMethods[0].Id,
 		})
