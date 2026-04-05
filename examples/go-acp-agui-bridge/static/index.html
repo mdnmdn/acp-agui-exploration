@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACP AG-UI Bridge</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        header p {
+            opacity: 0.9;
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+        
+        .container {
+            flex: 1;
+            display: flex;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+            padding: 1rem;
+            gap: 1rem;
+        }
+        
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .chat-header {
+            padding: 1rem;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            min-height: 400px;
+        }
+        
+        .message {
+            display: flex;
+            gap: 0.75rem;
+            max-width: 85%;
+        }
+        
+        .message.user {
+            align-self: flex-end;
+            flex-direction: row-reverse;
+        }
+        
+        .message-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.875rem;
+            flex-shrink: 0;
+        }
+        
+        .message.user .message-icon {
+            background: #667eea;
+            color: white;
+        }
+        
+        .message.assistant .message-icon {
+            background: #764ba2;
+            color: white;
+        }
+        
+        .message-content {
+            background: #f8f9fa;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            border-top-left-radius: 4px;
+            color: #333;
+            line-height: 1.5;
+        }
+        
+        .message.user .message-content {
+            background: #667eea;
+            color: white;
+            border-top-left-radius: 12px;
+            border-top-right-radius: 4px;
+        }
+        
+        .message.assistant .message-content {
+            border-top-left-radius: 4px;
+        }
+        
+        .message.reasoning .message-icon {
+            background: #f59e0b;
+        }
+        
+        .message.reasoning .message-content {
+            background: #fef3c7;
+            font-size: 0.875rem;
+            color: #92400e;
+        }
+        
+        .tool-call {
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            border-radius: 8px;
+            padding: 0.75rem;
+            font-size: 0.875rem;
+            color: #065f46;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .tool-call::before {
+            content: "🔧";
+        }
+        
+        .chat-input {
+            padding: 1rem;
+            border-top: 1px solid #eee;
+            display: flex;
+            gap: 0.75rem;
+        }
+        
+        .chat-input input {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 24px;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        
+        .chat-input input:focus {
+            border-color: #667eea;
+        }
+        
+        .chat-input button {
+            padding: 0.75rem 1.5rem;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 24px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        
+        .chat-input button:hover {
+            background: #5a67d8;
+        }
+        
+        .chat-input button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #666;
+            padding: 0.5rem;
+        }
+        
+        .loading-spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ddd;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .sidebar {
+            width: 280px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 1rem;
+        }
+        
+        .sidebar h2 {
+            font-size: 1rem;
+            color: #333;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .info-item {
+            margin-bottom: 1rem;
+        }
+        
+        .info-item label {
+            display: block;
+            font-size: 0.75rem;
+            color: #666;
+            margin-bottom: 0.25rem;
+            text-transform: uppercase;
+        }
+        
+        .info-item span {
+            font-size: 0.875rem;
+            color: #333;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                flex-direction: column;
+            }
+            
+            .sidebar {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🤖 ACP AG-UI Bridge</h1>
+        <p>Connect to ACP-compatible agents via web interface</p>
+    </header>
+    
+    <div class="container">
+        <div class="main-content">
+            <div class="chat-header">Chat</div>
+            <div class="chat-messages" id="messages">
+                <div class="message assistant">
+                    <div class="message-icon">AI</div>
+                    <div class="message-content">Hello! I'm connected to your ACP agent. Send me a message to get started.</div>
+                </div>
+            </div>
+            <div class="chat-input">
+                <input type="text" id="user-input" placeholder="Type your message..." autocomplete="off">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+        
+        <div class="sidebar">
+            <h2>Connection Info</h2>
+            <div class="info-item">
+                <label>Agent</label>
+                <span id="agent-info">--</span>
+            </div>
+            <div class="info-item">
+                <label>Port</label>
+                <span>3000</span>
+            </div>
+            <div class="info-item">
+                <label>Protocol</label>
+                <span>AG-UI (SSE)</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const AGENT_URL = 'http://localhost:3000/agent';
+        let threadId = '';
+        let runId = '';
+        
+        const messagesDiv = document.getElementById('messages');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        function generateId() {
+            return 'msg_' + Math.random().toString(36).substr(2, 9);
+        }
+        
+        function addMessage(role, content, isReasoning = false) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${role}${isReasoning ? ' reasoning' : ''}`;
+            
+            const icon = document.createElement('div');
+            icon.className = 'message-icon';
+            icon.textContent = role === 'user' ? 'You' : 'AI';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = content;
+            
+            msgDiv.appendChild(icon);
+            msgDiv.appendChild(contentDiv);
+            messagesDiv.appendChild(msgDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            return msgDiv;
+        }
+        
+        function addToolCall(name) {
+            const toolDiv = document.createElement('div');
+            toolDiv.className = 'tool-call';
+            toolDiv.textContent = name;
+            messagesDiv.appendChild(toolDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function addLoading() {
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'message assistant';
+            loadingDiv.id = 'loading-msg';
+            
+            const icon = document.createElement('div');
+            icon.className = 'message-icon';
+            icon.textContent = 'AI';
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.innerHTML = '<div class="loading"><div class="loading-spinner"></div>Thinking...</div>';
+            
+            loadingDiv.appendChild(icon);
+            loadingDiv.appendChild(contentDiv);
+            messagesDiv.appendChild(loadingDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function removeLoading() {
+            const loading = document.getElementById('loading-msg');
+            if (loading) loading.remove();
+        }
+        
+        async function sendMessage() {
+            const content = userInput.value.trim();
+            if (!content) return;
+            
+            userInput.value = '';
+            userInput.disabled = true;
+            sendBtn.disabled = true;
+            
+            addMessage('user', content);
+            addLoading();
+            
+            if (!threadId) threadId = generateId();
+            runId = generateId();
+            
+            try {
+                const response = await fetch(AGENT_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        threadId: threadId,
+                        runId: runId,
+                        messages: [
+                            { role: 'user', content: content }
+                        ]
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                removeLoading();
+                
+                let currentRole = 'assistant';
+                let currentContent = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                
+                                switch (data.type) {
+                                    case 'TEXT_MESSAGE_CONTENT':
+                                        if (!currentContent) {
+                                            addMessage('assistant', '');
+                                        }
+                                        currentContent += data.delta || '';
+                                        break;
+                                        
+                                    case 'REASONING_MESSAGE_CONTENT':
+                                        if (!currentContent) {
+                                            addMessage('reasoning', '');
+                                        }
+                                        currentContent += data.delta || '';
+                                        break;
+                                        
+                                    case 'TOOL_CALL_START':
+                                        addToolCall(data.toolCallName || 'Tool call');
+                                        break;
+                                        
+                                    case 'RUN_ERROR':
+                                        addMessage('assistant', `Error: ${data.message}`);
+                                        break;
+                                }
+                            } catch (e) {
+                                console.error('Parse error:', e);
+                            }
+                        }
+                    }
+                }
+                
+                if (currentContent) {
+                    const msgs = messagesDiv.querySelectorAll('.message.assistant');
+                    if (msgs.length > 0) {
+                        const last = msgs[msgs.length - 1];
+                        const contentDiv = last.querySelector('.message-content');
+                        contentDiv.textContent = currentContent;
+                    }
+                }
+                
+            } catch (error) {
+                removeLoading();
+                addMessage('assistant', `Error: ${error.message}`);
+            }
+            
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+            userInput.focus();
+        }
+        
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+        
+        userInput.focus();
+    </script>
+</body>
+</html>

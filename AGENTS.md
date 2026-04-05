@@ -49,11 +49,14 @@ acp-agui-bridge/
 
 ## _examples/ - Implementation Examples
 
-Coming soon - examples in various tech stacks:
-- TypeScript/Node.js ACP client
-- Python AG-UI server
-- Rust ACP agent
-- Bridge implementations
+Working examples in various tech stacks:
+
+| Example | Stack | Description |
+|---------|-------|-------------|
+| [go-copilotkit](./examples/go-copilotkit/) | Go | AG-UI/CopilotKit server with Gemini model - implements SSE endpoint for browser clients |
+| [go-acp-cli](./examples/go-acp-cli/) | Go | ACP CLI client with TUI - connects to ACP agents via stdio, includes mock agent |
+| [go-acp-agui-bridge](./examples/go-acp-agui-bridge/) | Go | ACP to AG-UI bridge - runs ACP agents and exposes AG-UI protocol via HTTP with web UI |
+| [copilotkit-webcomponent](./examples/copilotkit-webcomponent/) | TypeScript/React | Web component for embedding CopilotKit chat UI in any web page |
 
 ---
 
